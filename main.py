@@ -8,6 +8,7 @@ from WFA import build_WFA, run_WFA, calculate_average_input_distance
 from NFA import build_NFA, run_NFA 
 from FSM import build_FSM, run_FSM
 from sklearn.preprocessing import MinMaxScaler
+import time
 
 torch.manual_seed(1)
 
@@ -107,6 +108,8 @@ def TSFool(model, X, Y, automaton_type='WFA', K=2, T=30, F=0.1, eps=0.1, N=20, P
         if rep_model_pred_y[i_0] != model_pred_y[i_0]:
             differ_record.append(i_0)
 
+    start_time = time.time()
+
     # Find Target Positive Samples & Generate Minimum Positive Samples
     average_input_distance = calculate_average_input_distance(X)
     perturbation_amount = eps * average_input_distance
@@ -204,15 +207,15 @@ def TSFool(model, X, Y, automaton_type='WFA', K=2, T=30, F=0.1, eps=0.1, N=20, P
         # Initialize the perturbation
         perturbation = np.zeros_like(minimum_positive_sample_x)
         # Set the initial temperature
-        T = 10.0
+        T = 2.0
         # Set the cooling rate
         cooling_rate = 0.95
         # Set the maximum number of iterations
-        max_iter = 1000
+        max_iter = 500
         # Set the tolerance for error rate improvement
-        tol = 0.001
+        tol = 0.01
         # Set the patience for error rate improvement
-        patience = 20
+        patience = 10
         # Initialize the best error rate as infinity
         best_error_rate = np.inf
         # Initialize the counter for error rate improvement
@@ -238,7 +241,7 @@ def TSFool(model, X, Y, automaton_type='WFA', K=2, T=30, F=0.1, eps=0.1, N=20, P
             # Cool down
             T *= cooling_rate
             # If the error rate has not improved for a certain number of iterations, stop the iteration
-            if counter >= patience:
+            if counter >= patience or best_error_rate < 0.1:
                 break
         # Apply the final perturbation to the minimum positive sample to generate adversarial samples
         adv_x = minimum_positive_sample_x + perturbation
@@ -246,20 +249,26 @@ def TSFool(model, X, Y, automaton_type='WFA', K=2, T=30, F=0.1, eps=0.1, N=20, P
         adv_Y.append(minimum_positive_sample_y)
 
     # Use DBSCAN to cluster the minimum positive samples
-    scaler = MinMaxScaler()
-    minimum_positive_sample_X_scaled = scaler.fit_transform(np.vstack(minimum_positive_sample_X).reshape(len(minimum_positive_sample_X), -1))
-    dbscan = DBSCAN(eps=0.5)
-    dbscan.fit(minimum_positive_sample_X_scaled)
-    unique_clusters = np.unique(dbscan.labels_)
-    adv_X_clustered = []
-    adv_Y_clustered = []
-    for cluster in unique_clusters:
-        # Select one sample from each cluster
-        cluster_indices = np.where(dbscan.labels_ == cluster)[0]
-        selected_sample_index = np.random.choice(cluster_indices)
-        adv_X_clustered.append(adv_X[selected_sample_index])
-        adv_Y_clustered.append(adv_Y[selected_sample_index])
+    if C > 2:
+        scaler = MinMaxScaler()
+        minimum_positive_sample_X_scaled = scaler.fit_transform(np.vstack(minimum_positive_sample_X).reshape(len(minimum_positive_sample_X), -1))
+        dbscan = DBSCAN(eps=0.5)
+        dbscan.fit(minimum_positive_sample_X_scaled)
+        unique_clusters = np.unique(dbscan.labels_)
+        adv_X_clustered = []
+        adv_Y_clustered = []
+        for cluster in unique_clusters:
+            # Select one sample from each cluster
+            cluster_indices = np.where(dbscan.labels_ == cluster)[0]
+            selected_sample_index = np.random.choice(cluster_indices)
+            adv_X_clustered.append(adv_X[selected_sample_index])
+            adv_Y_clustered.append(adv_Y[selected_sample_index])
+    else:
+        adv_X_clustered = adv_X
+        adv_Y_clustered = adv_Y
 
+    elapsed_time = time.time() - start_time
+    print("Time per adversarial sample:", elapsed_time / len(np.array(adv_Y_clustered)))
     return np.array(adv_X_clustered), np.array(adv_Y_clustered), np.array(target_positive_sample_X), adv_index
 
 if __name__ == '__main__':
@@ -268,13 +277,35 @@ if __name__ == '__main__':
     dataset_name = 'GunPoint'
     X = np.load(f'datasets/preprocessed/{dataset_name}/{dataset_name}_TEST_X.npy')
     Y = np.load(f'datasets/preprocessed/{dataset_name}/{dataset_name}_TEST_Y.npy')
-    adv_X, adv_Y, target_X, index = TSFool(model, X, Y, automaton_type='NFA', K=2, T=30, F=0.1, eps=0.01, N=20, P=0.9, C=4, target=-1, details=False)
-    print(adv_X,adv_Y,target_X,index)
-    X_adv_torch = torch.from_numpy(adv_X).to(torch.float32)
-    output_adv, _ = model(X_adv_torch)
-    pred_adv = torch.max(output_adv, 1)[1].data.numpy()
 
-    # Calculate the attack success rate
-    attack_success_rate = np.mean(pred_adv != adv_Y)
+    while True:
+        adv_X, adv_Y, target_X, index = TSFool(model, X, Y, automaton_type='NFA', K=2, T=30, F=0.1, eps=0.01, N=20, P=0.9, C=1, target=-1, details=False)
+        # print(adv_X,adv_Y,target_X,index)
+        X_adv_torch = torch.from_numpy(adv_X).to(torch.float32)
+        output_adv, _ = model(X_adv_torch)
+        pred_adv = torch.max(output_adv, 1)[1].data.numpy()
 
-    print('Attack success rate:', attack_success_rate)
+        # Calculate the attack success rate
+        attack_success_rate = np.mean(pred_adv != adv_Y)
+
+        print('Attack success rate:', attack_success_rate)
+        
+        if attack_success_rate >= 0.9:
+            break
+
+    # Calculate the robust radius
+    robust_radii = []
+
+    for i in range(adv_X.shape[0]):
+        current_adv_x = adv_X[i]
+        distance = np.linalg.norm(current_adv_x - target_X[i], ord=np.inf)  # Maximum distance (L-infinity norm)
+        robust_radii.append(distance)
+
+    robust_radius = max(robust_radii)
+    print('Robust radius:',robust_radius)
+
+    
+    # Calculate perturbation ratio
+    perturbation = np.mean(np.abs(target_X - adv_X), axis=(0, 1))
+    perturbation_ratio = np.mean(perturbation) / np.max(adv_X)
+    print('Perturbation ratio:', perturbation_ratio)
