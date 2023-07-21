@@ -293,7 +293,7 @@ if __name__ == '__main__':
         if attack_success_rate >= 0.9:
             break
 
-    # Calculate the robust radius
+    # Calculate robust radius
     robust_radii = []
 
     for i in range(adv_X.shape[0]):
@@ -305,7 +305,27 @@ if __name__ == '__main__':
     print('Robust radius:',robust_radius)
 
     
-    # Calculate perturbation ratio
-    perturbation = np.mean(np.abs(target_X - adv_X), axis=(0, 1))
-    perturbation_ratio = np.mean(perturbation) / np.max(adv_X)
-    print('Perturbation ratio:', perturbation_ratio)
+    # average perturbation amount (percentage)
+    sum_perturbation_amount = 0
+    group_size = int(adv_X.shape[0] / target_X.shape[0])
+    for i in range(target_X.shape[0]):
+        current_target_x = target_X[i]
+        for j in range(group_size):
+            current_adv_x = adv_X[i * group_size + j]
+            sum_perturbation_amount += np.sum(np.abs(current_target_x - current_adv_x))
+
+    avg_perturbation_amount = sum_perturbation_amount / len(adv_X)
+
+    max_x = np.array([-65535 for i in range(X.shape[1])])
+    min_x = np.array([65535 for i in range(X.shape[1])])
+    for i in range(X.shape[0]):
+        for j in range(X.shape[1]):
+            if X[i][j][0] > max_x[j]:
+                max_x[j] = X[i][j][0]
+            if X[i][j][0] < min_x[j]:
+                min_x[j] = X[i][j][0]
+    range_amount = sum(max_x - min_x)
+    avg_perturbation_amount_percentage = 100 * (avg_perturbation_amount / range_amount)
+
+    print('avg_perturbation_amount:', avg_perturbation_amount)
+    print('avg_perturbation_amount_percentage:', avg_perturbation_amount_percentage,"%")
